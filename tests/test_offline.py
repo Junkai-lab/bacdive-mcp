@@ -388,7 +388,43 @@ def test_citation_attaches_reference_id_and_doi_link() -> None:
 def _tool_text(name: str, arguments: dict) -> dict:
     result = asyncio.run(mcp._handle_call_tool(None, CallToolRequestParams(name=name, arguments=arguments)))
     assert result.is_error is False
+    assert result.structured_content == {"result": result.content[0].text}
     return json.loads(result.content[0].text)
+
+
+def test_stdio_client_accepts_wrong_type_arguments() -> None:
+    """The official client validates non-error results against the output schema."""
+
+    async def run() -> None:
+        import sys
+
+        from mcp import ClientSession
+        from mcp.client.stdio import StdioServerParameters, stdio_client
+
+        server = StdioServerParameters(command=sys.executable, args=["-m", "bacdive_mcp"])
+        async with stdio_client(server) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                cases = [
+                    ("query_by_traits", {"ph_below": "abc"}, "ph_below must be a number."),
+                    ("get_strain", {"bacdive_id": "abc"}, "bacdive_id must be an integer."),
+                    ("get_citation", {"bacdive_id": "abc"}, "bacdive_id must be an integer."),
+                    ("query_by_traits", {"limit": "x", "oxygen": "anaerobe"}, "limit must be an integer."),
+                    ("search_strains", {"name": "Phaeobacter", "limit": "x"}, "limit must be an integer."),
+                    ("get_growth_conditions", {"bacdive_id": "abc"}, "bacdive_id must be an integer."),
+                ]
+                for name, arguments, expected in cases:
+                    result = await session.call_tool(name, arguments)
+                    assert result.is_error is False
+                    text = result.content[0].text
+                    assert result.structured_content == {"result": text}
+                    payload = json.loads(text)
+                    assert payload["error"] == "invalid_argument"
+                    assert expected in payload["message"]
+                    assert "Input should be" not in payload["message"]
+                    assert "abc" not in payload["message"]
+
+    asyncio.run(run())
 
 
 def test_wrong_argument_types_return_invalid_argument() -> None:

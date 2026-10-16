@@ -70,7 +70,13 @@ class BacdiveMCP(MCPServer):
                     "status": None,
                 }
                 text = json.dumps(payload, ensure_ascii=False, indent=2)
-                return CallToolResult(content=[TextContent(type="text", text=text)], is_error=False)
+                # Tools declare outputSchema {"result": string}. A non-error reply
+                # without structured_content is rejected by the mcp 2.3 client.
+                return CallToolResult(
+                    content=[TextContent(type="text", text=text)],
+                    structured_content={"result": text},
+                    is_error=False,
+                )
             if isinstance(exc, ToolError) and not isinstance(exc, UnexpectedToolError):
                 logger.info("Tool %r failed: %r", params.name, str(exc))
             else:
