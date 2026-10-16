@@ -21,8 +21,10 @@ from bacdive_mcp.sparql import (
     SPARQL_ENDPOINT,
     SPARQL_UI,
     build_name_query,
+    build_trait_count_query,
     build_trait_query,
     parse_id_bindings,
+    parse_total,
     parse_trait_bindings,
 )
 
@@ -238,7 +240,7 @@ class BacdiveService:
         limit: int = 20,
     ) -> dict:
         limit = _limit(limit, 50, "limit")
-        query = build_trait_query(
+        shared = dict(
             isolation_source=isolation_source,
             ph_below=ph_below,
             oxygen=oxygen,
@@ -248,8 +250,8 @@ class BacdiveService:
             temperature_optimum_above=temperature_optimum_above,
             limit=limit,
         )
-        payload = self._sparql(query)
-        rows = parse_trait_bindings(payload)
+        rows = parse_trait_bindings(self._sparql(build_trait_query(**shared)))
+        total_matched = parse_total(self._sparql(build_trait_count_query(**shared)))
         notes = [RECORDED_NOTE]
         if ph_below is not None:
             notes.append(PH_NOTE)
@@ -257,7 +259,9 @@ class BacdiveService:
             "source": "bacdive-sparql",
             "sparql_ui": SPARQL_UI,
             "sparql_endpoint": SPARQL_ENDPOINT,
+            "total_matched": total_matched,
             "returned": len(rows),
+            "truncated": total_matched > len(rows),
             "limit": limit,
             "results": rows,
             "notes": notes,

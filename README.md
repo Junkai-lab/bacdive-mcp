@@ -42,7 +42,7 @@ After a future release, the same entry point is `uvx bacdive-mcp`. Point an MCP 
 | `lookup_by_collection_number` | REST `/v2/culturecollectionno/{number}` with `search_type` `exact`, `contains`, `startswith`, or `endswith`. |
 | `lookup_by_sequence` | REST `/v2/sequence_16s/{accession}` and/or `/v2/sequence_genome/{accession}`. |
 | `get_growth_conditions` | Medium, temperature, pH, and oxygen tolerance, split into `measured` and `predicted`. |
-| `get_citation` | Strain DOI, literature, the Reference section, and the BacDive paper citation. |
+| `get_citation` | Strain DOI, literature (each paper's DOI, doi.org link, and BacDive reference id when the Reference section matches), and the BacDive paper citation. |
 | `normalize_taxon_name` | Public NCBI Taxonomy E-utilities (`esearch` + `efetch`). No other taxonomy database. |
 | `query_by_traits` | SPARQL on `https://sparql.dsmz.de/api/bacdive`, the query service behind https://sparql.dsmz.de/bacdive. |
 
@@ -65,7 +65,7 @@ These were checked against the live API on 16 October 2026.
    BacDive 6583, *Lacticaseibacillus manihotivorans* (DSM 13343).
 
 5. **Which strains were isolated from soil and can grow below pH 5?**
-   `query_by_traits(isolation_source="soil", ph_below=5)` returns recorded knowledge-graph rows whose growth-positive pH range starts below 5 and whose isolation-source label contains "soil" (for example BacDive 135, *Terriglobus saanensis*, range 4.5–7.5). A range of 4.2–7.0 matches. This is not a single assay taken at pH 5, and it is not a genome prediction.
+   `query_by_traits(isolation_source="soil", ph_below=5)` returns recorded knowledge-graph rows whose growth-positive pH range starts below 5 and whose isolation-source label contains "soil" (for example BacDive 135, *Terriglobus saanensis*, range 4.5–7.5). The same response reports `total_matched`, `returned`, and `truncated`, so a short list shows how many strains were cut off at the limit. On 16 October 2026 this filter matched 218 strains. A range of 4.2–7.0 matches. This is not a single assay taken at pH 5, and it is not a genome prediction.
 
 ## Measured values and predictions
 
@@ -82,6 +82,7 @@ BacDive's REST API omits genome-based predictions unless the request sets `predi
 - HTTP 429 and 5xx responses are retried at most 3 times (backoff 0.5 s, 1 s, 2 s). A `Retry-After` longer than 8 seconds stops the tool instead of leaving the client waiting.
 - The `User-Agent` is `bacdive-mcp/0.1 (+https://github.com/Junkai-lab/bacdive-mcp)`.
 - Tool output is capped at about 20,000 characters. Long medium recipes and literature lists are shortened first.
+- An argument of the wrong type (for example text in `ph_below`, or a non-integer BacDive id) comes back as the same JSON `invalid_argument` result as other rejected arguments. The message names the field and the expected type.
 
 ## Data attribution
 

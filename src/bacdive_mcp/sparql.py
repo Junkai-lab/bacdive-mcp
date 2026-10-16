@@ -78,7 +78,7 @@ def _finite(value: float, label: str, low: float, high: float) -> float:
     return number
 
 
-def build_trait_query(
+def _trait_query_parts(
     *,
     isolation_source: str | None = None,
     ph_below: float | None = None,
@@ -88,7 +88,7 @@ def build_trait_query(
     temperature_optimum_below: float | None = None,
     temperature_optimum_above: float | None = None,
     limit: int = 20,
-) -> str:
+) -> tuple[str, list[str]]:
     if not any(
         value is not None and value != ""
         for value in (
@@ -195,7 +195,30 @@ def build_trait_query(
         patterns.append("?strain d3o:hasBacDiveID ?id ;")
         patterns.append("    rdfs:label ?name .")
 
-    body = "\n  ".join(patterns)
+    return "\n  ".join(patterns), select
+
+
+def build_trait_query(
+    *,
+    isolation_source: str | None = None,
+    ph_below: float | None = None,
+    oxygen: str | None = None,
+    genus: str | None = None,
+    gram: str | None = None,
+    temperature_optimum_below: float | None = None,
+    temperature_optimum_above: float | None = None,
+    limit: int = 20,
+) -> str:
+    body, select = _trait_query_parts(
+        isolation_source=isolation_source,
+        ph_below=ph_below,
+        oxygen=oxygen,
+        genus=genus,
+        gram=gram,
+        temperature_optimum_below=temperature_optimum_below,
+        temperature_optimum_above=temperature_optimum_above,
+        limit=limit,
+    )
     projection = " ".join(select)
     return (
         f"{PREFIXES}\n"
@@ -204,6 +227,31 @@ def build_trait_query(
         f"GROUP BY ?id ?name\n"
         f"LIMIT {int(limit)}\n"
     )
+
+
+def build_trait_count_query(
+    *,
+    isolation_source: str | None = None,
+    ph_below: float | None = None,
+    oxygen: str | None = None,
+    genus: str | None = None,
+    gram: str | None = None,
+    temperature_optimum_below: float | None = None,
+    temperature_optimum_above: float | None = None,
+    limit: int = 20,
+) -> str:
+    """Count distinct strains for the same WHERE body as the limited trait query."""
+    body, _select = _trait_query_parts(
+        isolation_source=isolation_source,
+        ph_below=ph_below,
+        oxygen=oxygen,
+        genus=genus,
+        gram=gram,
+        temperature_optimum_below=temperature_optimum_below,
+        temperature_optimum_above=temperature_optimum_above,
+        limit=limit,
+    )
+    return f"{PREFIXES}\nSELECT (COUNT(DISTINCT ?id) AS ?total)\nWHERE {{\n  {body}\n}}\n"
 
 
 def build_name_query(
@@ -331,6 +379,20 @@ def parse_trait_bindings(payload: dict) -> list[dict]:
                 item[key] = _maybe_number(value) if key.startswith(("ph_", "temperature_")) else value
         parsed.append(item)
     return parsed
+
+
+def parse_total(payload: dict) -> int:
+    rows = payload.get("results", {}).get("bindings", [])
+    raw = binding_value(rows[0], "total") if rows else None
+    if raw is None:
+        raise BacdiveError("The trait count query did not return a total.", code="sparql_error")
+    try:
+        total = int(raw)
+    except ValueError as exc:
+        raise BacdiveError("The trait count query did not return a total.", code="sparql_error") from exc
+    if total < 0:
+        raise BacdiveError("The trait count query did not return a total.", code="sparql_error")
+    return total
 
 
 def parse_id_bindings(payload: dict) -> list[int]:

@@ -413,22 +413,68 @@ def growth_summary(record: dict) -> dict:
     }
 
 
+_DOI_PREFIX = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/|doi:)\s*", re.IGNORECASE)
+
+
+def doi_key(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = _DOI_PREFIX.sub("", value.strip()).strip().rstrip(" .")
+    return text.lower() or None
+
+
+def doi_link(value: Any) -> str | None:
+    """Resolvable link for a DOI or an existing URL. Missing values stay None."""
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if raw.lower().startswith(("http://", "https://")):
+        return raw
+    key = doi_key(raw)
+    if key and key.startswith("10."):
+        return "https://doi.org/" + key
+    return None
+
+
+def _reference_ids_by_doi_and_pubmed(refs: dict[int, dict]) -> tuple[dict[str, int], dict[str, int]]:
+    by_doi: dict[str, int] = {}
+    by_pubmed: dict[str, int] = {}
+    for ref_id, ref in refs.items():
+        key = doi_key(ref.get("doi_or_url"))
+        if key and key not in by_doi:
+            by_doi[key] = ref_id
+        pubmed = ref.get("pubmed")
+        if pubmed is not None:
+            digits = str(pubmed).strip()
+            if digits and digits not in by_pubmed:
+                by_pubmed[digits] = ref_id
+    return by_doi, by_pubmed
+
+
 def citation_summary(record: dict) -> dict:
     info = identity(record)
     refs = reference_index(record)
+    by_doi, by_pubmed = _reference_ids_by_doi_and_pubmed(refs)
     literature = record.get("Literature") or {}
     papers = []
     for item in as_list(literature.get("literature"))[:12]:
         if not isinstance(item, dict):
             continue
+        doi = item.get("DOI")
+        pubmed = item.get("Pubmed-ID")
+        ref_id = by_doi.get(doi_key(doi) or "")
+        if ref_id is None and pubmed is not None:
+            ref_id = by_pubmed.get(str(pubmed).strip())
         papers.append(
             {
                 "title": clip(item.get("title"), 300),
                 "authors": clip(item.get("authors"), 300),
                 "journal": item.get("journal"),
                 "year": item.get("year"),
-                "doi": item.get("DOI"),
-                "pubmed_id": item.get("Pubmed-ID"),
+                "doi": doi,
+                "link": doi_link(doi),
+                "pubmed_id": pubmed,
+                "bacdive_reference_id": ref_id,
                 "bacdive_id": info["bacdive_id"],
                 "page": info["page"],
             }

@@ -77,6 +77,15 @@ def test_citation_has_strain_doi_and_a_reference(service: BacdiveService) -> Non
     assert citation["bacdive_database_citation"].startswith("Schober I")
     assert "10.1093/nar/gkae959" in citation["bacdive_database_citation"]
     assert any(ref.get("doi_or_url") for ref in citation["references"])
+    assert citation["literature"]
+    for paper in citation["literature"]:
+        assert "bacdive_reference_id" in paper
+        assert "link" in paper
+        doi = paper.get("doi")
+        if isinstance(doi, str) and doi.strip().lower().startswith("10."):
+            assert paper["link"].startswith("https://doi.org/")
+        if paper["bacdive_reference_id"] is not None:
+            assert isinstance(paper["bacdive_reference_id"], int)
 
 
 def test_ncbi_normalises_roseobacter_synonym(service: BacdiveService) -> None:
@@ -90,6 +99,11 @@ def test_soil_and_ph_below_5_returns_recorded_rows(service: BacdiveService) -> N
     found = service.query_by_traits(isolation_source="soil", ph_below=5, limit=5)
     assert found["results"]
     assert found["source"] == "bacdive-sparql"
+    assert found["returned"] == len(found["results"])
+    assert found["returned"] <= found["limit"]
+    assert isinstance(found["total_matched"], int)
+    assert found["total_matched"] > found["returned"]
+    assert found["truncated"] is True
     for row in found["results"]:
         assert row["value_kind"] == "recorded"
         assert row["ph_start"] < 5

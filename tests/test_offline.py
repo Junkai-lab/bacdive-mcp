@@ -2,19 +2,27 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
 import httpx
 import pytest
+from mcp_types import CallToolRequestParams
 
 from bacdive_mcp.errors import BacdiveError
 from bacdive_mcp.http import PoliteHttp
 from bacdive_mcp.ncbi import normalize_taxon_name
-from bacdive_mcp.present import growth_summary, strain_summary
+from bacdive_mcp.present import citation_summary, growth_summary, strain_summary
 from bacdive_mcp.server import mcp
 from bacdive_mcp.service import BacdiveService, parse_taxon_name
-from bacdive_mcp.sparql import build_name_query, build_trait_query, parse_trait_bindings
+from bacdive_mcp.sparql import (
+    build_name_query,
+    build_trait_count_query,
+    build_trait_query,
+    parse_total,
+    parse_trait_bindings,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -133,10 +141,19 @@ def test_trait_query_uses_decimal_comparison_and_not_predictions() -> None:
     assert 'soil\\"' in query
     assert "Genome-based" not in query
     assert "prediction" not in query.lower()
+    counted = build_trait_count_query(isolation_source='soil"', ph_below=5, limit=3)
+    assert "SELECT (COUNT(DISTINCT ?id) AS ?total)" in counted
+    assert "FILTER(?phStart < 5)" in counted
+    assert 'soil\\"' in counted
+    assert "GROUP BY" not in counted
+    assert "LIMIT" not in counted
     with pytest.raises(BacdiveError):
         build_trait_query()
     with pytest.raises(BacdiveError):
         build_trait_query(ph_below=float("nan"))
+    assert parse_total(
+        {"results": {"bindings": [{"total": {"type": "literal", "value": "218"}}]}}
+    ) == 218
 
 
 def test_name_query_matches_k12_without_requiring_the_hyphen() -> None:
@@ -297,6 +314,106 @@ def test_api_key_is_not_kept_in_errors_or_cache(tmp_path: Path) -> None:
         for path in cache.rglob("*"):
             if path.is_file():
                 assert secret not in path.read_text(encoding="utf-8")
+
+
+def test_query_by_traits_reports_total_and_truncation() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = request.content.decode()
+        if "COUNT(DISTINCT ?id)" in body:
+            total = "3" if "anaerobe" in body else "10"
+            payload = {
+                "head": {"vars": ["total"]},
+                "results": {"bindings": [{"total": {"type": "literal", "value": total}}]},
+            }
+            return httpx.Response(200, json=payload)
+        return httpx.Response(200, content=load("sparql_soil_ph_below_5.json"))
+
+    service = BacdiveService(
+        PoliteHttp(transport=httpx.MockTransport(handler), min_interval=0, enabled_cache=False)
+    )
+    cut = service.query_by_traits(isolation_source="soil", ph_below=5, limit=3)
+    assert cut["total_matched"] == 10
+    assert cut["returned"] == 3
+    assert cut["limit"] == 3
+    assert cut["truncated"] is True
+    assert len(cut["results"]) == 3
+
+    complete = service.query_by_traits(oxygen="anaerobe", limit=3)
+    assert complete["total_matched"] == 3
+    assert complete["returned"] == 3
+    assert complete["truncated"] is False
+
+
+def test_citation_attaches_reference_id_and_doi_link() -> None:
+    papers = {
+        paper["doi"]: paper
+        for paper in citation_summary(json_fixture("fetch_10422.json")["results"]["10422"])["literature"]
+    }
+    matched = papers["10.1099/ijs.0.63330-0"]
+    assert matched["bacdive_reference_id"] == 27645
+    assert matched["link"] == "https://doi.org/10.1099/ijs.0.63330-0"
+    unmatched = papers["10.1128/aem.01715-10"]
+    assert unmatched["bacdive_reference_id"] is None
+    assert unmatched["link"] == "https://doi.org/10.1128/aem.01715-10"
+
+    strain = citation_summary(json_fixture("fetch_24493.json")["results"]["24493"])
+    assert strain["literature"]
+    assert all(paper["bacdive_reference_id"] is None for paper in strain["literature"])
+    first = strain["literature"][0]
+    assert first["doi"] == "10.1099/00207713-48-2-537"
+    assert first["link"] == "https://doi.org/10.1099/00207713-48-2-537"
+
+    pubmed_only = citation_summary(
+        {
+            "General": {"BacDive-ID": 1},
+            "Reference": [
+                {"@id": 9, "pubmed": 42},
+                {"@id": 8, "doi/url": "https://doi.org/10.1099/ijs.0.63330-0"},
+            ],
+            "Literature": {
+                "literature": [
+                    {"title": "by pubmed", "Pubmed-ID": "42"},
+                    {"title": "by doi url", "DOI": "https://dx.doi.org/10.1099/IJS.0.63330-0"},
+                ]
+            },
+        }
+    )
+    by_title = {paper["title"]: paper for paper in pubmed_only["literature"]}
+    assert by_title["by pubmed"]["bacdive_reference_id"] == 9
+    assert by_title["by pubmed"]["link"] is None
+    assert by_title["by doi url"]["bacdive_reference_id"] == 8
+    assert by_title["by doi url"]["link"] == "https://dx.doi.org/10.1099/IJS.0.63330-0"
+
+
+def _tool_text(name: str, arguments: dict) -> dict:
+    result = asyncio.run(mcp._handle_call_tool(None, CallToolRequestParams(name=name, arguments=arguments)))
+    assert result.is_error is False
+    return json.loads(result.content[0].text)
+
+
+def test_wrong_argument_types_return_invalid_argument() -> None:
+    secret = "SECRETVALUE" * 30
+    cases = [
+        ("query_by_traits", {"ph_below": "low"}, "ph_below must be a number."),
+        ("query_by_traits", {"limit": "many", "oxygen": "anaerobe"}, "limit must be an integer."),
+        ("get_strain", {"bacdive_id": secret}, "bacdive_id must be an integer."),
+        ("get_strain", {"bacdive_id": 24493, "include_predictions": "maybe"}, "include_predictions must be true or false."),
+        ("get_growth_conditions", {"bacdive_id": "nope"}, "bacdive_id must be an integer."),
+        ("search_strains", {"name": 12}, "name must be text."),
+        ("get_citation", {"bacdive_id": "10.1"}, "bacdive_id must be an integer."),
+    ]
+    for name, arguments, expected in cases:
+        payload = _tool_text(name, arguments)
+        assert payload["error"] == "invalid_argument"
+        assert payload["status"] is None
+        assert expected in payload["message"]
+        assert "Input should be" not in payload["message"]
+        assert "unable to parse" not in payload["message"]
+        assert secret not in payload["message"]
+        assert "SECRETVALUE" not in json.dumps(payload)
+
+    both = _tool_text("query_by_traits", {"ph_below": "low", "limit": "many"})
+    assert both["message"] == "ph_below must be a number. limit must be an integer."
 
 
 def test_registered_tools() -> None:
